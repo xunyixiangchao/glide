@@ -480,28 +480,119 @@ public class RequestManagerRetriever implements Handler.Callback {
     return requestManager;
   }
 
+  // We care about the instance specifically.
+  @SuppressWarnings({"ReferenceEquality", "PMD.CompareObjectsWithEquals"})
+  private boolean verifyOurFragmentWasAddedOrCantBeAdded(android.app.FragmentManager fm) {
+    RequestManagerFragment newlyAddedRequestManagerFragment =
+        pendingRequestManagerFragments.get(fm);
+
+    RequestManagerFragment actualFragment =
+        (RequestManagerFragment) fm.findFragmentByTag(FRAGMENT_TAG);
+    if (actualFragment == newlyAddedRequestManagerFragment) {
+      return true;
+    }
+
+    if (actualFragment != null) {
+      throw new IllegalStateException(
+          "We've added two fragments!"
+              + " Old: "
+              + actualFragment
+              + " New: "
+              + newlyAddedRequestManagerFragment);
+    }
+    if (fm.isDestroyed()) {
+      if (Log.isLoggable(TAG, Log.WARN)) {
+        Log.w(TAG, "Parent was destroyed before our Fragment could be added");
+      }
+      newlyAddedRequestManagerFragment.getGlideLifecycle().onDestroy();
+      return true;
+    }
+    // Otherwise we should make another attempt to commit the fragment and loop back again in the
+    // next frame to verify.
+    fm.beginTransaction()
+        .add(newlyAddedRequestManagerFragment, FRAGMENT_TAG)
+        .commitAllowingStateLoss();
+    handler.obtainMessage(ID_REMOVE_SUPPORT_FRAGMENT_MANAGER, fm).sendToTarget();
+    if (Log.isLoggable(TAG, Log.DEBUG)) {
+      Log.d(TAG, "We failed to add our Fragment the first time around, trying again...");
+    }
+    return false;
+  }
+
+  // We care about the instance specifically.
+  @SuppressWarnings({"ReferenceEquality", "PMD.CompareObjectsWithEquals"})
+  private boolean verifyOurSupportFragmentWasAddedOrCantBeAdded(FragmentManager supportFm) {
+    SupportRequestManagerFragment newlyAddedSupportRequestManagerFragment =
+        pendingSupportRequestManagerFragments.get(supportFm);
+
+    SupportRequestManagerFragment actualFragment =
+        (SupportRequestManagerFragment) supportFm.findFragmentByTag(FRAGMENT_TAG);
+    if (actualFragment == newlyAddedSupportRequestManagerFragment) {
+      return true;
+    }
+
+    if (actualFragment != null) {
+      throw new IllegalStateException(
+          "We've added two fragments!"
+              + " Old: "
+              + actualFragment
+              + " New: "
+              + newlyAddedSupportRequestManagerFragment);
+    }
+    // If our parent was destroyed, we're never going to be able to add our fragment, so we should
+    // just clean it up and abort.
+    if (supportFm.isDestroyed()) {
+      if (Log.isLoggable(TAG, Log.WARN)) {
+        Log.w(TAG, "Parent was destroyed before our Fragment could be added");
+      }
+      newlyAddedSupportRequestManagerFragment.getGlideLifecycle().onDestroy();
+      return true;
+    }
+    // Otherwise we should make another attempt to commit the fragment and loop back again in the
+    // next frame to verify.
+    supportFm
+        .beginTransaction()
+        .add(newlyAddedSupportRequestManagerFragment, FRAGMENT_TAG)
+        .commitAllowingStateLoss();
+    handler.obtainMessage(ID_REMOVE_SUPPORT_FRAGMENT_MANAGER, supportFm).sendToTarget();
+    if (Log.isLoggable(TAG, Log.DEBUG)) {
+      Log.d(TAG, "We failed to add our Fragment the first time around, trying again...");
+    }
+    return false;
+  }
+
+  @SuppressWarnings("PMD.CollapsibleIfStatements")
   @Override
   public boolean handleMessage(Message message) {
     boolean handled = true;
+    boolean attemptedRemoval = false;
     Object removed = null;
     Object key = null;
     switch (message.what) {
       case ID_REMOVE_FRAGMENT_MANAGER:
         android.app.FragmentManager fm = (android.app.FragmentManager) message.obj;
-        key = fm;
-        removed = pendingRequestManagerFragments.remove(fm);
+        if (verifyOurFragmentWasAddedOrCantBeAdded(fm)) {
+          attemptedRemoval = true;
+          key = fm;
+          removed = pendingRequestManagerFragments.remove(fm);
+        }
         break;
       case ID_REMOVE_SUPPORT_FRAGMENT_MANAGER:
         FragmentManager supportFm = (FragmentManager) message.obj;
-        key = supportFm;
-        removed = pendingSupportRequestManagerFragments.remove(supportFm);
+        if (verifyOurSupportFragmentWasAddedOrCantBeAdded(supportFm)) {
+          attemptedRemoval = true;
+          key = supportFm;
+          removed = pendingSupportRequestManagerFragments.remove(supportFm);
+        }
         break;
       default:
         handled = false;
         break;
     }
-    if (handled && removed == null && Log.isLoggable(TAG, Log.WARN)) {
-      Log.w(TAG, "Failed to remove expected request manager fragment, manager: " + key);
+    if (Log.isLoggable(TAG, Log.WARN)) {
+      if (attemptedRemoval && removed == null) {
+        Log.w(TAG, "Failed to remove expected request manager fragment, manager: " + key);
+      }
     }
     return handled;
   }
